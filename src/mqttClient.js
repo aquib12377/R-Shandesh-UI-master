@@ -36,6 +36,8 @@ export async function getClient() {
 }
 
 export async function publish(topic, payload, opts = { qos: 0, retain: false }) {
+    console.log("[PUB]", topic, payload);
+
   const c = await getClient();
   const msg = typeof payload === "string" ? payload : JSON.stringify(payload);
   if (c.connected) c.publish(topic, msg, opts);
