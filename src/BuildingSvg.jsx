@@ -187,7 +187,7 @@ export default function BuildingOverlay() {
       <div className="fixed top-4 left-4 z-50 flex items-center gap-2">
         <span className={`inline-block h-3 w-3 rounded-full ${deviceConnected ? "bg-green-500" : "bg-red-500"}`}/>
         <span className="text-xs text-gray-700">
-          {deviceConnected ? "ESP32 connected" : (brokerConnected ? "ESP32 offline" : "Broker offline")}
+          {deviceConnected ? "Scale Model Online" : (brokerConnected ? "Scale Model offline" : "Server offline")}
         </span>
       </div>
 
