@@ -2,7 +2,10 @@
 import { useState, useRef, useEffect } from "react";
 import Navbar from "./components/Navbar";
 import ButtonTray from "./components/Buttons";
-import { getClient, publish, onMessage } from "./mqttClient";
+import {
+  t, getClient, publish, subscribe, onMessage,
+  recordAck, startHeartbeat, stopHeartbeat, isDeviceAlive
+} from "./mqttClient";
 
 export default function BuildingOverlay() {
   const [floors] = useState([
@@ -12,57 +15,88 @@ export default function BuildingOverlay() {
   ]);
 
   const [selectedWing, setSelectedWing] = useState(null);
-  const [hoveredWing, setHoveredWing] = useState(null);
-  const [mqttConnected, setMqttConnected] = useState(false);
+  const [hoveredWing, setHoveredWing]   = useState(null);
+  const [brokerConnected, setBrokerConnected] = useState(false); // raw MQTT
+  const [deviceConnected, setDeviceConnected] = useState(false); // ESP32 presence via ACKs
   const svgRef = useRef(null);
 
-  // ---- MQTT wiring ----
+  // ---- MQTT wiring + presence heartbeat ----
   useEffect(() => {
+    let stopHb = null;
+
     (async () => {
       const c = await getClient();
 
       const onConnect = () => {
-        setMqttConnected(true);
-        c.subscribe("building/ui/ack");   // listen for ESP32 ACKs
+        setBrokerConnected(true);
+        subscribe(t("ui/ack"));    // ESP32 ACKs
+        subscribe(t("ui/status")); // optional: 'online'/'offline' LWT
+        // start heartbeat pings in background
+        stopHb = startHeartbeat(5000);
+        // kick one immediate ping so status flips quickly
+        publish(t("ui/cmd"), { type: "ping", ts: Date.now() });
       };
-      const onClose = () => setMqttConnected(false);
+      const onClose = () => {
+        setBrokerConnected(false);
+        setDeviceConnected(false); // broker down -> device unknown
+        stopHeartbeat();
+      };
 
       c.on("connect", onConnect);
-      c.on("close", onClose);
+      c.on("close",   onClose);
 
-      onMessage((t, m) => {
-        if (t === "building/ui/ack") {
-          console.log("ACK:", m.toString());
+      onMessage((topic, msg) => {
+        const s = msg.toString();
+        if (topic === t("ui/ack")) {
+          // any ACK counts as device alive
+          recordAck();
+          // debounce UI: only mark alive if last ACK < 12s ago
+          setDeviceConnected(isDeviceAlive());
+          try {
+            const j = JSON.parse(s);
+            // (optional) use j.ok/j.type if you want to surface details
+            // console.log("ACK:", j);
+          } catch { /* ignore */ }
+        } else if (topic === t("ui/status")) {
+          // if your ESP32 publishes 'online' retained at connect and LWT 'offline'
+          if (s === "offline") setDeviceConnected(false);
+          if (s === "online")  setDeviceConnected(true);
         } else {
-          console.log("MQTT:", t, m.toString());
+          // other topics if any
+          // console.log("MQTT:", topic, s);
         }
       });
-
-      return () => {
-        try {
-          c.off("connect", onConnect);
-          c.off("close", onClose);
-        } catch {}
-      };
     })();
+
+    // soft background checker to age out deviceConnected if no ACKs for 12s
+    const ageTimer = setInterval(() => {
+      setDeviceConnected(isDeviceAlive());
+    }, 2000);
+
+    return () => {
+      clearInterval(ageTimer);
+      stopHeartbeat?.();
+      try {
+        const c = clientMaybe(); // best-effort: remove listeners if present
+        c?.off?.("connect");
+        c?.off?.("close");
+      } catch {}
+    };
   }, []);
 
+  // helper for cleanup (optional)
+  const clientMaybe = () => {
+    try { return window.__mqtt_client_ref; } catch { return null; }
+  };
+
   // ---- ID → LABEL maps that mirror Buttons.jsx ----
-  // main buttons (no submenu)
   const MAIN_BY_ID = {
     "1": "Pattern",
     "4": "Surround Lights",
-    "5": "All Lights ON", // (trim trailing space from your data)
+    "5": "All Lights ON",
     "6": "OFF",
   };
-
-  // parents for submenu groups
-  const PARENT_BY_ID = {
-    "2": "Podium",
-    "3": "BHK",
-  };
-
-  // submenu items by parent id
+  const PARENT_BY_ID = { "2": "Podium", "3": "BHK" };
   const SUB_BY_PARENT_ID = {
     "2": { "1": "Landscape", "2": "Parking", "3": "Shops" },
     "3": { "1": "3BHK",      "2": "4BHK" }
@@ -72,81 +106,48 @@ export default function BuildingOverlay() {
   function publishMain(labelRaw) {
     const label = (labelRaw || "").trim();
     switch (label) {
-      case "Pattern":
-        publish("building/ui/cmd", { type: "pattern" });
-        break;
-      case "Surround Lights":
-        publish("building/ui/cmd", { type: "surround" });
-        break;
-      case "All Lights ON":
-        publish("building/ui/cmd", { type: "all_on" });
-        break;
-      case "OFF":
-        publish("building/ui/cmd", { type: "all_off" });
-        break;
+      case "Pattern":         publish(t("ui/cmd"), { type: "pattern"   }); break;
+      case "Surround Lights": publish(t("ui/cmd"), { type: "surround"  }); break;
+      case "All Lights ON":   publish(t("ui/cmd"), { type: "all_on"    }); break;
+      case "OFF":             publish(t("ui/cmd"), { type: "all_off"   }); break;
       default:
         console.warn("[BTN] Unmapped main label:", labelRaw);
     }
   }
-
   function publishSub(parentLabelRaw, subLabelRaw) {
     const parent = (parentLabelRaw || "").trim();
     const item   = (subLabelRaw   || "").trim();
-
-    if (parent === "Podium") {
-      publish("building/ui/cmd", { type: "podium", item });
-    } else if (parent === "BHK") {
-      publish("building/ui/cmd", { type: "bhk", item });
-    } else {
-      console.warn("[BTN] Unmapped submenu:", parentLabelRaw, subLabelRaw);
-    }
+    if (parent === "Podium") publish(t("ui/cmd"), { type: "podium", item });
+    else if (parent === "BHK") publish(t("ui/cmd"), { type: "bhk", item });
+    else console.warn("[BTN] Unmapped submenu:", parentLabelRaw, subLabelRaw);
   }
 
-  // --- adapter that matches what Buttons.jsx actually sends ---
-  // Buttons.jsx calls:
-  //  - onSelect("button", "<id>" | null)
-  //  - onSelect("submenu", { parent: "<parentId>", item: "<itemId>" })
+  // --- adapter that matches Buttons.jsx ("button", id) / ("submenu", {parent,item}) ---
   const handleButtonSelect = (type, value) => {
-    // main button clicks
     if (type === "button") {
-      if (!value) {
-        console.log("[BTN] main: deselect");
-        return;
-      }
+      if (!value) return; // deselect
       const label = MAIN_BY_ID[String(value)];
-      if (label) {
-        console.log("[BTN] main:", value, "→", label);
-        publishMain(label);
-      } else {
-        console.warn("[BTN] Unknown main id:", value);
-      }
+      if (label) publishMain(label);
+      else console.warn("[BTN] Unknown main id:", value);
       return;
     }
-
-    // submenu clicks
     if (type === "submenu" && value && value.parent && value.item) {
       const parentLabel = PARENT_BY_ID[String(value.parent)];
       const itemLabel   = (SUB_BY_PARENT_ID[String(value.parent)] || {})[String(value.item)];
-      if (parentLabel && itemLabel) {
-        console.log("[BTN] sub:", value.parent, "/", value.item, "→", parentLabel, ">", itemLabel);
-        publishSub(parentLabel, itemLabel);
-      } else {
-        console.warn("[BTN] Unknown submenu ids:", value);
-      }
+      if (parentLabel && itemLabel) publishSub(parentLabel, itemLabel);
+      else console.warn("[BTN] Unknown submenu ids:", value);
       return;
     }
-
     console.warn("[BTN] Unknown (type,value):", type, value);
   };
 
-  // ---- Existing wing hover/click logic (unchanged) ----
+  // ---- Existing wing hover/click logic ----
   const getFloorFillColor = (floor) =>
     selectedWing === floor.id ? "rgba(208, 170, 45, 0.5)" : "rgba(0, 0, 0, 0.22)";
 
   const handleNavbarSelect = (type, value) => {
     if (type === "wing") {
       setSelectedWing(value);
-
       if (svgRef.current) {
         floors.forEach((floor) => {
           const el = svgRef.current.querySelector(`#${floor.id}`);
@@ -156,7 +157,7 @@ export default function BuildingOverlay() {
             : "rgba(0, 0, 0, 0.22)";
         });
       }
-      publish("building/ui/cmd", { type: "wing_select", wing: value });
+      publish(t("ui/cmd"), { type: "wing_select", wing: value });
     }
   };
 
@@ -164,14 +165,12 @@ export default function BuildingOverlay() {
     event.target.style.fill = "rgba(208, 170, 45, 0.5)";
     if (floor.id === 'a-wing' || floor.id === 'b-wing') setHoveredWing(floor.id);
   };
-
   const handleFloorMouseLeave = (floor, event) => {
     event.target.style.fill = getFloorFillColor(floor);
     if (floor.id === 'a-wing' || floor.id === 'b-wing') setHoveredWing(null);
   };
-
-  const handleFloorClick = (floor, event) => {
-    publish("building/ui/cmd", { type: "wing_click", wing: floor.id });
+  const handleFloorClick = (floor) => {
+    publish(t("ui/cmd"), { type: "wing_click", wing: floor.id });
   };
 
   const getTextPosition = (wingId) => {
@@ -184,10 +183,12 @@ export default function BuildingOverlay() {
 
   return (
     <div className="fixed inset-0 w-full h-full overflow-hidden bg-[#dedbd4]">
-      {/* MQTT status */}
+      {/* Presence status — shows ESP32 presence, not raw broker status */}
       <div className="fixed top-4 left-4 z-50 flex items-center gap-2">
-        <span className={`inline-block h-3 w-3 rounded-full ${mqttConnected ? "bg-green-500" : "bg-red-500"}`}/>
-        <span className="text-xs text-gray-700">{mqttConnected ? "MQTT connected" : "MQTT offline"}</span>
+        <span className={`inline-block h-3 w-3 rounded-full ${deviceConnected ? "bg-green-500" : "bg-red-500"}`}/>
+        <span className="text-xs text-gray-700">
+          {deviceConnected ? "ESP32 connected" : (brokerConnected ? "ESP32 offline" : "Broker offline")}
+        </span>
       </div>
 
       {/* Logo */}
@@ -223,7 +224,7 @@ export default function BuildingOverlay() {
                   className="cursor-pointer transition-colors duration-200"
                   onMouseEnter={(e) => handleFloorMouseEnter(floor, e)}
                   onMouseLeave={(e) => handleFloorMouseLeave(floor, e)}
-                  onClick={(e) => handleFloorClick(floor, e)}
+                  onClick={() => handleFloorClick(floor)}
                   vectorEffect="non-scaling-stroke"
                 />
                 {(floor.id === 'a-wing' || floor.id === 'b-wing') && (
