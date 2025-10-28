@@ -1,0 +1,39 @@
+@import "tailwindcss";
+@font-face {
+  font-family: "Gotham-Office";
+  src: url("/src/assets/bodoni.ttf");
+  font-weight: lighter;
+}
+@font-face {
+  font-family: "Spectra";
+  src: url("/src/assets/GT-Sectra-Light.ttf");
+  font-weight: bolder;
+}
+/* Add to your CSS file or Tailwind config */
+.drop-container::before{
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: 32px;
+    background-color: rgba(103,84,48,0.3);
+    background: linear-gradient(135deg, rgba(192,160,98,0.7), rgba(168,136,76,0.7));
+    z-index: -777;
+}
+.split-slideshow {
+  font-family: 'Roboto Condensed', sans-serif;
+}
+
+.split-slideshow img {
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+/* Custom scrollbar for better aesthetics */
+.split-slideshow::-webkit-scrollbar {
+  display: none;
+}
+
+.split-slideshow {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
