@@ -92,6 +92,7 @@ export default function BuildingOverlay() {
   // ---- ID → LABEL maps that mirror Buttons.jsx ----
   const MAIN_BY_ID = {
     "1": "Pattern",
+        "2": "Shop",              // ADDED: new single button
     "4": "Surround Lights",
     "5": "All Lights ON",
     "6": "OFF",
@@ -107,6 +108,8 @@ export default function BuildingOverlay() {
     const label = (labelRaw || "").trim();
     switch (label) {
       case "Pattern":         publish(t("ui/cmd"), { type: "pattern"   }); break;
+            case "Shop":            publish(t("ui/cmd"), { type: "shops"     }); break; // ADDED
+
       case "Surround Lights": publish(t("ui/cmd"), { type: "surround"  }); break;
       case "All Lights ON":   publish(t("ui/cmd"), { type: "all_on"    }); break;
       case "OFF":             publish(t("ui/cmd"), { type: "all_off"   }); break;

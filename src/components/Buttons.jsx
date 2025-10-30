@@ -13,22 +13,12 @@ export default function ButtonTray({ onSelect }) {
   const [isTouchDevice, setIsTouchDevice] = useState(false);
   const hoverTimeoutRef = useRef(null);
 
-  const buttons = [
-    { 
-      id: "1", 
-      label: "Pattern",
-      hasSubmenu: false
-    },
-    { 
-      id: "2", 
-      label: "Podium",
-      hasSubmenu: true,
-      submenuItems: [
-        { id: "1", label: "Landscape" },
-        { id: "2", label: "Parking" },
-        { id: "3", label: "Shops" }
-      ]
-    },
+const buttons = [
+    { id: "1", label: "Pattern", hasSubmenu: false },
+
+    // CHANGED: Podium submenu => single "Shop" button
+    { id: "2", label: "Shop", hasSubmenu: false },
+
     { 
       id: "3", 
       label: "BHK",
@@ -38,21 +28,9 @@ export default function ButtonTray({ onSelect }) {
         { id: "2", label: "4BHK" },
       ]
     },
-    { 
-      id: "4", 
-      label: "Surround Lights",
-      hasSubmenu: false
-    }, 
-    { 
-      id: "5", 
-      label: "All Lights ON ",
-      hasSubmenu: false
-    },
-    { 
-      id: "6", 
-      label: "OFF",
-      hasSubmenu: false
-    },
+    { id: "4", label: "Surround Lights", hasSubmenu: false }, 
+    { id: "5", label: "All Lights ON ", hasSubmenu: false },
+    { id: "6", label: "OFF", hasSubmenu: false },
   ];
 
   // Detect touch device on mount
