@@ -7,6 +7,9 @@ export default function Navbar({ onSelect }) {
   const buttonRefs = useRef({});
   const [selectedWing, setSelectedWing] = useState(null);
 
+  // NEW: lock the last-clicked wing until another wing is clicked
+  const [lockedWing, setLockedWing] = useState(null);
+
   const wings = [
     { id: "a-wing", label: "A-Wing" },
     { id: "b-wing", label: "B-Wing" },
@@ -91,15 +94,13 @@ export default function Navbar({ onSelect }) {
       ripple.style.width = ripple.style.height = `${size}px`;
       ripple.style.left = `${x}px`;
       ripple.style.top = `${y}px`;
-      
+
       gsap.to(ripple, {
         opacity: 0,
         duration: 1,
         scale: 0,
         ease: "power1.out",
-        onComplete: () => {
-          ripple.remove();
-        },
+        onComplete: () => ripple.remove(),
       });
     }
   };
@@ -111,6 +112,9 @@ export default function Navbar({ onSelect }) {
   };
 
   const handleWingClick = (wingId, e) => {
+    // If this wing is locked (last clicked), ignore
+    if (lockedWing === wingId) return;
+
     const container = containerRef.current;
     if (container) {
       const rect = container.getBoundingClientRect();
@@ -119,16 +123,12 @@ export default function Navbar({ onSelect }) {
       animateGradientFromPoint(x, y, `wing-${wingId}`);
     }
 
-    // Toggle selection
-    const newSelectedWing = selectedWing === wingId ? null : wingId;
-    setSelectedWing(newSelectedWing);
-    
-    // Call parent callback
-    if (onSelect) {
-      onSelect("wing", newSelectedWing);
-    }
-    
-    console.log("Wing clicked:", wingId);
+    // No toggle-off: select & lock this wing until another wing is clicked
+    setSelectedWing(wingId);
+    setLockedWing(wingId);
+
+    if (onSelect) onSelect("wing", wingId);
+    // console.log("Wing clicked:", wingId);
   };
 
   return (
@@ -152,33 +152,38 @@ export default function Navbar({ onSelect }) {
         }}
       >
         {/* Wing Navigation Buttons */}
-        {wings.map((wing) => (
-          <div className="flex items-center" key={wing.id}>
-            <button
-              ref={(el) => {
-                if (el) buttonRefs.current[`wing-${wing.id}`] = el;
-              }}
-              onMouseEnter={(e) => rippleMouseMove(e, e.currentTarget)}
-              onMouseLeave={(e) => rippleMouseLeave(e, e.currentTarget)}
-              className="dropbox-btn font-zap uppercase overflow-hidden text-shadow-lg p-1 px-3 rounded-2xl transition-all duration-300 cursor-pointer relative 
-                max-sm:px-1 max-sm:p-0.5 max-sm:text-[8px] 
-                max-md:px-2 max-md:p-1 max-md:text-[10px] 
-                max-lg:px-2 max-lg:p-1 max-lg:text-[12px]
-                max-xl:px-2 max-xl:p-1 max-xl:text-[12px]
-                max-2xl:px-2 max-2xl:p-1 max-2xl:text-[14px]"
-              onClick={(e) => handleWingClick(wing.id, e)}
-              style={
-                selectedWing === wing.id
-                  ? {
-                      backgroundColor: "#404566",
-                    }
-                  : {}
-              }
-            >
-              {wing.label}
-            </button>
-          </div>
-        ))}
+        {wings.map((wing) => {
+          const disabled = lockedWing === wing.id;
+          return (
+            <div className="flex items-center" key={wing.id}>
+              <button
+                ref={(el) => {
+                  if (el) buttonRefs.current[`wing-${wing.id}`] = el;
+                }}
+                onMouseEnter={(e) => !disabled && rippleMouseMove(e, e.currentTarget)}
+                onMouseLeave={(e) => !disabled && rippleMouseLeave(e, e.currentTarget)}
+                onClick={(e) => !disabled && handleWingClick(wing.id, e)}
+                disabled={disabled}
+                aria-disabled={disabled}
+                className={`dropbox-btn font-zap uppercase overflow-hidden text-shadow-lg p-1 px-3 rounded-2xl transition-all duration-300 relative 
+                  max-sm:px-1 max-sm:p-0.5 max-sm:text-[8px] 
+                  max-md:px-2 max-md:p-1 max-md:text-[10px] 
+                  max-lg:px-2 max-lg:p-1 max-lg:text-[12px]
+                  max-xl:px-2 max-xl:p-1 max-xl:text-[12px]
+                  max-2xl:px-2 max-2xl:p-1 max-2xl:text-[14px]
+                  ${disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}
+                `}
+                style={
+                  selectedWing === wing.id
+                    ? { backgroundColor: "#404566" }
+                    : {}
+                }
+              >
+                {wing.label}
+              </button>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
