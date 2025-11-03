@@ -16,8 +16,12 @@ export default function BuildingOverlay() {
 
   const [selectedWing, setSelectedWing] = useState(null);
   const [hoveredWing, setHoveredWing] = useState(null);
-  const [brokerConnected, setBrokerConnected] = useState(false); // raw MQTT
-  const [deviceConnected, setDeviceConnected] = useState(false); // ESP32 presence via ACKs
+  const [brokerConnected, setBrokerConnected] = useState(false);
+  const [deviceConnected, setDeviceConnected] = useState(false);
+
+  // NEW: lock the last clicked control (main or submenu)
+  const [lockedKey, setLockedKey] = useState(null);
+
   const svgRef = useRef(null);
 
   // ---- MQTT wiring + presence heartbeat ----
@@ -29,16 +33,14 @@ export default function BuildingOverlay() {
 
       const onConnect = () => {
         setBrokerConnected(true);
-        subscribe(t("ui/ack"));    // ESP32 ACKs
-        subscribe(t("ui/status")); // optional: 'online'/'offline' LWT
-        // start heartbeat pings in background
+        subscribe(t("ui/ack"));
+        subscribe(t("ui/status"));
         stopHb = startHeartbeat(5000);
-        // kick one immediate ping so status flips quickly
         publish(t("ui/cmd"), { type: "ping", ts: Date.now() });
       };
       const onClose = () => {
         setBrokerConnected(false);
-        setDeviceConnected(false); // broker down -> device unknown
+        setDeviceConnected(false);
         stopHeartbeat();
       };
 
@@ -48,98 +50,90 @@ export default function BuildingOverlay() {
       onMessage((topic, msg) => {
         const s = msg.toString();
         if (topic === t("ui/ack")) {
-          // any ACK counts as device alive
           recordAck();
-          // debounce UI: only mark alive if last ACK < 12s ago
           setDeviceConnected(isDeviceAlive());
-          try {
-            const j = JSON.parse(s);
-            // (optional) use j.ok/j.type if you want to surface details
-            // console.log("ACK:", j);
-          } catch { /* ignore */ }
+          try { JSON.parse(s); } catch {}
         } else if (topic === t("ui/status")) {
-          // if your ESP32 publishes 'online' retained at connect and LWT 'offline'
           if (s === "offline") setDeviceConnected(false);
           if (s === "online") setDeviceConnected(true);
-        } else {
-          // other topics if any
-          // console.log("MQTT:", topic, s);
         }
       });
     })();
 
-    // soft background checker to age out deviceConnected if no ACKs for 12s
-    const ageTimer = setInterval(() => {
-      setDeviceConnected(isDeviceAlive());
-    }, 2000);
+    const ageTimer = setInterval(() => setDeviceConnected(isDeviceAlive()), 2000);
 
     return () => {
       clearInterval(ageTimer);
       stopHeartbeat?.();
-      try {
-        const c = clientMaybe(); // best-effort: remove listeners if present
-        c?.off?.("connect");
-        c?.off?.("close");
-      } catch { }
+      try { window.__mqtt_client_ref?.off?.("connect"); window.__mqtt_client_ref?.off?.("close"); } catch {}
     };
   }, []);
 
-  // helper for cleanup (optional)
-  const clientMaybe = () => {
-    try { return window.__mqtt_client_ref; } catch { return null; }
-  };
-
-  // ---- ID → LABEL maps that mirror Buttons.jsx ----
+  // ---- ID → LABEL maps (aligned with Buttons.jsx) ----
   const MAIN_BY_ID = {
     "1": "Pattern",
-    "2": "Shop",              // ADDED: new single button
+    "2": "Podium",          // (1) renamed from "Shop" → "Podium"
     "4": "Surround Lights",
     "5": "All Lights ON",
     "6": "OFF",
   };
-  const PARENT_BY_ID = { "2": "Podium", "3": "BHK" };
+  const PARENT_BY_ID = { "3": "BHK" }; // only BHK has submenu now
   const SUB_BY_PARENT_ID = {
-    "2": { "1": "Landscape", "2": "Parking", "3": "Shops" },
     "3": { "1": "3BHK", "2": "4BHK" }
   };
 
-  // --- publish helpers (trimmed labels) ---
+  // --- publish helpers ---
   function publishMain(labelRaw) {
     const label = (labelRaw || "").trim();
     switch (label) {
-      case "Pattern": publish(t("ui/cmd"), { type: "pattern" }); break;
-      case "Shop": publish(t("ui/cmd"), { type: "shops" }); break; // ADDED
+      case "Pattern":         publish(t("ui/cmd"), { type: "pattern" }); break;
+      case "Podium":          publish(t("ui/cmd"), { type: "podium" });  break; // (1) now sends "podium"
       case "Surround Lights": publish(t("ui/cmd"), { type: "surround" }); break;
-      case "All Lights ON": publish(t("ui/cmd"), { type: "all_on" }); break;
-      case "OFF": publish(t("ui/cmd"), { type: "all_off" }); break;
-      default:
-        console.warn("[BTN] Unmapped main label:", labelRaw);
+      case "All Lights ON":   publish(t("ui/cmd"), { type: "all_on" });   break;
+      case "OFF":             publish(t("ui/cmd"), { type: "all_off" });  break;
+      default: console.warn("[BTN] Unmapped main label:", labelRaw);
     }
   }
   function publishSub(parentLabelRaw, subLabelRaw) {
     const parent = (parentLabelRaw || "").trim();
-    const item = (subLabelRaw || "").trim();
-    if (parent === "Podium") publish(t("ui/cmd"), { type: "podium", item });
-    else if (parent === "BHK") publish(t("ui/cmd"), { type: "bhk", item });
+    const item   = (subLabelRaw || "").trim();
+    if (parent === "BHK") publish(t("ui/cmd"), { type: "bhk", item });
     else console.warn("[BTN] Unmapped submenu:", parentLabelRaw, subLabelRaw);
   }
 
-  // --- adapter that matches Buttons.jsx ("button", id) / ("submenu", {parent,item}) ---
+  // --- key helpers for lock ---
+  const keyOf = (type, value) => {
+    if (type === "button") return `button:${value}`;
+    if (type === "submenu") return `submenu:${value.parent}-${value.item}`;
+    return null;
+  };
+
+  // --- adapter used by Buttons.jsx ---
   const handleButtonSelect = (type, value) => {
+    // (3) prevent re-clicking the same control while it's locked
+    const k = keyOf(type, value);
+    if (k && k === lockedKey) return;
+
     if (type === "button") {
       if (!value) return; // deselect
       const label = MAIN_BY_ID[String(value)];
       if (label) publishMain(label);
       else console.warn("[BTN] Unknown main id:", value);
+
+      // lock this button until another button/submenu is clicked
+      setLockedKey(k);
       return;
     }
     if (type === "submenu" && value && value.parent && value.item) {
       const parentLabel = PARENT_BY_ID[String(value.parent)];
-      const itemLabel = (SUB_BY_PARENT_ID[String(value.parent)] || {})[String(value.item)];
+      const itemLabel   = (SUB_BY_PARENT_ID[String(value.parent)] || {})[String(value.item)];
       if (parentLabel && itemLabel) publishSub(parentLabel, itemLabel);
       else console.warn("[BTN] Unknown submenu ids:", value);
+
+      // lock this submenu item until some other control is clicked
+      setLockedKey(k);
       return;
-    }
+    } 
     console.warn("[BTN] Unknown (type,value):", type, value);
   };
 
@@ -185,29 +179,23 @@ export default function BuildingOverlay() {
 
   return (
     <div className="fixed inset-0 w-full h-full overflow-hidden bg-[#dedbd4]">
-      {/* Presence status — shows ESP32 presence, not raw broker status */}
+      {/* Presence bubble */}
       <div className="fixed top-5 left-5 z-50 flex items-center space-x-3 animate-fade-in">
         <div className="relative">
           <span className={`h-4 w-4 rounded-full ${deviceConnected ? "bg-green-800" : brokerConnected ? "bg-yellow-400" : "bg-red-500"}`} />
           <span className={`absolute inset-0 rounded-full ${deviceConnected ? "bg-green-800" : brokerConnected ? "bg-yellow-400" : "bg-red-500"} opacity-50 animate-ping`} />
         </div>
         <div className="text-sm font-medium text-[#242424] bg-white/60 backdrop-blur px-3 py-1 rounded-full border border-[#aaa] shadow-sm">
-          {deviceConnected
-            ? "Scale Model Online"
-            : brokerConnected
-              ? "Scale Model Offline"
-              : "Server Offline"}
+          {deviceConnected ? "Scale Model Online" : brokerConnected ? "Scale Model Offline" : "Server Offline"}
         </div>
       </div>
-
-
 
       {/* Logo */}
       <div className="fixed top-4 right-10 z-40">
         <img src="/logo.png" alt="Logo" className="w-16 h-16 sm:w-20 sm:h-20 md:w-30 md:h-30 object-contain" />
       </div>
 
-      {/* Main Building Container */}
+      {/* Main Building */}
       <div className="relative w-full h-full flex items-center justify-center">
         <svg
           ref={svgRef}
@@ -217,14 +205,7 @@ export default function BuildingOverlay() {
           preserveAspectRatio="xMidYMid slice"
           style={{ minWidth: '100%', minHeight: '100%' }}
         >
-          <image
-            href="/building.svg"
-            x="0"
-            y="-25"
-            width="1150"
-            height="800"
-            preserveAspectRatio="xMidYMid meet"
-          />
+          <image href="/building.svg" x="0" y="-25" width="1150" height="800" preserveAspectRatio="xMidYMid meet" />
           <g style={{ transform: 'translate(5px, 75px) scale(0.72)', transformOrigin: '0 0' }}>
             {floors.map((floor) => (
               <g key={floor.id}>
@@ -232,8 +213,8 @@ export default function BuildingOverlay() {
                   id={floor.id}
                   d={floor.d}
                   fill={getFloorFillColor(floor)}
-                  className={`cursor-pointer transition-all duration-300 ease-in-out ${selectedWing === floor.id ? "drop-glow" : ""
-                    }`} onMouseEnter={(e) => handleFloorMouseEnter(floor, e)}
+                  className={`cursor-pointer transition-all duration-300 ease-in-out ${selectedWing === floor.id ? "drop-glow" : ""}`}
+                  onMouseEnter={(e) => handleFloorMouseEnter(floor, e)}
                   onMouseLeave={(e) => handleFloorMouseLeave(floor, e)}
                   onClick={() => handleFloorClick(floor)}
                   vectorEffect="non-scaling-stroke"
@@ -267,7 +248,8 @@ export default function BuildingOverlay() {
 
       {/* Navbar + Buttons */}
       <Navbar onSelect={handleNavbarSelect} />
-      <ButtonTray onSelect={handleButtonSelect} />
+      {/* Pass lockedKey and stickyBhk to Buttons */}
+      <ButtonTray onSelect={handleButtonSelect} lockedKey={lockedKey} stickyBhk />
     </div>
   );
 }
